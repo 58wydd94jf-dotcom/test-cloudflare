@@ -262,9 +262,7 @@ function normalizeListingForSave(
 }
 
 function validateListing(listing = {}) {
-  const normalized = normalizeListingForSave(listing, {
-    defaultCity: true,
-  });
+  const normalized = normalizeListingForSave(listing);
   const errors = [];
 
   if (!validListingType(normalized.listing_type)) {
