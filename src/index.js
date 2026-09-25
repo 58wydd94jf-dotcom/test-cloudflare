@@ -82,8 +82,6 @@ const REQUIRED_TABLE_COLUMNS = {
   ],
 };
 
-let runtimeReadyPromise = null;
-
 function textResponse(text, status = 200) {
   return new Response(text, {
     status,
@@ -343,16 +341,6 @@ function validateEnvironment(env) {
 }
 
 async function getTableColumns(env, tableName) {
-  const tableExists = await env.DB.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
-  )
-    .bind(tableName)
-    .first();
-
-  if (!tableExists) {
-    return null;
-  }
-
   const result = await env.DB.prepare(
     `PRAGMA table_info(${tableName})`
   ).all();
@@ -364,7 +352,7 @@ async function getTableColumns(env, tableName) {
     }
   }
 
-  return columns;
+  return columns.size ? columns : null;
 }
 
 async function validateSchema(env) {
@@ -404,17 +392,8 @@ async function validateSchema(env) {
 }
 
 async function ensureRuntimeReady(env) {
-  if (!runtimeReadyPromise) {
-    runtimeReadyPromise = (async () => {
-      validateEnvironment(env);
-      await validateSchema(env);
-    })().catch((error) => {
-      runtimeReadyPromise = null;
-      throw error;
-    });
-  }
-
-  await runtimeReadyPromise;
+  validateEnvironment(env);
+  await validateSchema(env);
 }
 
 function boolLabel(value) {
@@ -1930,23 +1909,16 @@ async function handleUpdate(
   env,
   update
 ) {
-  let claimedUpdateId = false;
-  let updateId = null;
+  const updateId = update.update_id;
+  const claimedUpdateId = await claimUpdateId(
+    env,
+    updateId
+  );
 
-  if (
-    update.update_id !==
-    undefined
-  ) {
-    updateId = update.update_id;
-    claimedUpdateId = await claimUpdateId(
-      env,
-      updateId
-    );
-
-    if (!claimedUpdateId) {
-      return;
-    }
+  if (!claimedUpdateId) {
+    return;
   }
+
   try {
     if (
       update.callback_query
@@ -1982,7 +1954,6 @@ async function handleUpdate(
   } catch (error) {
     if (
       claimedUpdateId &&
-      updateId !== null &&
       Boolean(error?.retryable)
     ) {
       await releaseUpdateId(
@@ -2064,7 +2035,8 @@ export default {
       if (
         !update ||
         typeof update !== "object" ||
-        Array.isArray(update)
+        Array.isArray(update) ||
+        !Number.isInteger(update.update_id)
       ) {
         return textResponse(
           "Invalid telegram update.",
