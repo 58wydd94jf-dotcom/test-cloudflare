@@ -29,6 +29,7 @@ const STATUS_NAMES = {
 };
 
 const MAX_PHOTOS = 5;
+const DEFAULT_UPDATE_RETENTION_DAYS = 30;
 
 function textResponse(text, status = 200) {
   return new Response(text, {
@@ -49,10 +50,14 @@ function jsonResponse(data, status = 200) {
 }
 
 async function telegram(env, method, body) {
-  const token = env.TELEGRAM_BOT_TOK;
+  const token =
+    env.TELEGRAM_BOT_TOKEN ??
+    env.TELEGRAM_BOT_TOK;
 
   if (!token) {
-    throw new Error("TELEGRAM_BOT_TOK is not configured");
+    throw new Error(
+      "TELEGRAM_BOT_TOKEN/TELEGRAM_BOT_TOK is not configured"
+    );
   }
 
   const url =
@@ -106,6 +111,22 @@ async function telegram(env, method, body) {
   }
 
   throw lastError;
+}
+
+function parsePositiveInteger(
+  value,
+  fallback
+) {
+  const n = Number(value);
+
+  if (
+    Number.isInteger(n) &&
+    n > 0
+  ) {
+    return n;
+  }
+
+  return fallback;
 }
 
 async function sendMessage(env, chatId, text, replyMarkup) {
@@ -228,6 +249,94 @@ function commandName(text) {
   );
 
   return match ? match[1].toLowerCase() : null;
+}
+
+function isValidListingType(type) {
+  return Boolean(TYPE_NAMES[type]);
+}
+
+function isValidPropertyType(type) {
+  return Boolean(PROPERTY_NAMES[type]);
+}
+
+function validateListingForSave(listing) {
+  if (
+    !listing ||
+    !isValidListingType(listing.listing_type)
+  ) {
+    return "نوع آگهی نامعتبر است.";
+  }
+
+  if (
+    !isValidPropertyType(
+      listing.property_type
+    )
+  ) {
+    return "نوع ملک نامعتبر است.";
+  }
+
+  const requiredTextFields = [
+    "title",
+    "description",
+    "district",
+    "address",
+    "available_from",
+    "floor",
+    "phone",
+  ];
+
+  for (const field of requiredTextFields) {
+    if (!normalizeText(listing[field])) {
+      return "اطلاعات آگهی ناقص است.";
+    }
+  }
+
+  if (
+    !Number.isFinite(Number(listing.rooms)) ||
+    Number(listing.rooms) < 0
+  ) {
+    return "تعداد اتاق نامعتبر است.";
+  }
+
+  if (
+    !Number.isFinite(
+      Number(listing.area_sqm)
+    ) ||
+    Number(listing.area_sqm) <= 0
+  ) {
+    return "متراژ نامعتبر است.";
+  }
+
+  if (listing.listing_type === "sale") {
+    if (
+      !Number.isFinite(
+        Number(listing.sale_price)
+      ) ||
+      Number(listing.sale_price) < 0
+    ) {
+      return "قیمت فروش نامعتبر است.";
+    }
+  } else {
+    const rentFields = [
+      "cold_rent",
+      "warm_rent",
+      "additional_costs",
+      "deposit",
+    ];
+
+    for (const field of rentFields) {
+      if (
+        !Number.isFinite(
+          Number(listing[field])
+        ) ||
+        Number(listing[field]) < 0
+      ) {
+        return "اطلاعات قیمت اجاره نامعتبر است.";
+      }
+    }
+  }
+
+  return null;
 }
 
 async function getOrCreateUser(env, from) {
@@ -570,6 +679,13 @@ async function startSubmit(env, chatId, userId) {
 }
 
 async function saveListing(env, user, listing) {
+  const validationError =
+    validateListingForSave(listing);
+
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
   const result = await env.DB.prepare(
     `INSERT INTO listings (
       user_id,
@@ -647,6 +763,28 @@ async function saveListing(env, user, listing) {
   }
 
   return listingId;
+}
+
+async function cleanupProcessedUpdates(env) {
+  const retentionDays =
+    parsePositiveInteger(
+      env.UPDATE_RETENTION_DAYS,
+      DEFAULT_UPDATE_RETENTION_DAYS
+    );
+
+  try {
+    await env.DB.prepare(
+      `DELETE FROM telegram_updates
+       WHERE created_at < datetime('now', ?)`
+    )
+      .bind(`-${retentionDays} days`)
+      .run();
+  } catch (error) {
+    console.error(
+      "cleanupProcessedUpdates failed",
+      error
+    );
+  }
 }
 
 function listingSummary(listing) {
@@ -1281,11 +1419,34 @@ async function handleCallback(
     const property =
       data.split(":")[1];
 
+    if (
+      !isValidPropertyType(property)
+    ) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "نوع ملک نامعتبر است."
+      );
+      return;
+    }
+
     const session =
       await getSession(
         env,
         user.id
       );
+
+    if (
+      !session ||
+      session.state !== "property_type"
+    ) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "وضعیت فرم معتبر نیست."
+      );
+      return;
+    }
 
     const listing =
       safeJsonParse(
@@ -1326,11 +1487,36 @@ async function handleCallback(
     const [, field, value] =
       data.split(":");
 
+    if (
+      ![
+        "furnished",
+        "balcony",
+        "elevator",
+      ].includes(field) ||
+      !["0", "1"].includes(value)
+    ) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "گزینه نامعتبر است."
+      );
+      return;
+    }
+
     const session =
       await getSession(
         env,
         user.id
       );
+
+    if (!session) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "وضعیت فرم معتبر نیست."
+      );
+      return;
+    }
 
     const listing =
       safeJsonParse(
@@ -1399,6 +1585,23 @@ async function handleCallback(
         session.data,
         {}
       ).listing || {};
+
+    const validationError =
+      validateListingForSave(listing);
+
+    if (validationError) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "اطلاعات ناقص است"
+      );
+      await sendMessage(
+        env,
+        chatId,
+        `${validationError}\n\nلطفاً اطلاعات را کامل کن و دوباره تأیید کن.`
+      );
+      return;
+    }
 
     const id =
       await saveListing(
@@ -1711,21 +1914,13 @@ async function handleUpdate(
 ) {
   if (
     update.update_id !==
-    undefined
-  ) {
-    if (
-      await wasUpdateProcessed(
-        env,
-        update.update_id
-      )
-    ) {
-      return;
-    }
-
-    await markUpdateProcessed(
+    undefined &&
+    (await wasUpdateProcessed(
       env,
       update.update_id
-    );
+    ))
+  ) {
+    return;
   }
 
   if (
@@ -1759,6 +1954,16 @@ async function handleUpdate(
       update.message
     );
   }
+
+  if (
+    update.update_id !==
+    undefined
+  ) {
+    await markUpdateProcessed(
+      env,
+      update.update_id
+    );
+  }
 }
 
 function checkWebhookSecret(
@@ -1776,6 +1981,19 @@ function checkWebhookSecret(
     request.headers.get(
       "X-Telegram-Bot-Api-Secret-Token"
     ) === configured
+  );
+}
+
+function isProductionEnvironment(env) {
+  const value = normalizeText(
+    env.APP_ENV ||
+      env.ENVIRONMENT ||
+      ""
+  ).toLowerCase();
+
+  return (
+    value === "production" ||
+    value === "prod"
   );
 }
 
@@ -1822,6 +2040,30 @@ export default {
     }
 
     try {
+      const hasToken = Boolean(
+        env.TELEGRAM_BOT_TOKEN ??
+          env.TELEGRAM_BOT_TOK
+      );
+
+      if (!hasToken) {
+        return textResponse(
+          "Worker misconfigured: missing bot token.",
+          500
+        );
+      }
+
+      if (
+        isProductionEnvironment(env) &&
+        !normalizeText(
+          env.TELEGRAM_WEBHOOK_SECRET
+        )
+      ) {
+        return textResponse(
+          "Worker misconfigured: missing webhook secret in production.",
+          500
+        );
+      }
+
       const update =
         await request.json();
 
@@ -1829,6 +2071,12 @@ export default {
         env,
         update
       );
+
+      if (Math.random() < 0.02) {
+        await cleanupProcessedUpdates(
+          env
+        );
+      }
 
       return textResponse("OK");
     } catch (error) {

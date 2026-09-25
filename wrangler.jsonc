@@ -2,11 +2,30 @@
   "name": "test-cloudflare",
   "main": "src/index.js",
   "compatibility_date": "2026-09-24",
+  "vars": {
+    "APP_ENV": "development",
+    "UPDATE_RETENTION_DAYS": "30"
+  },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "duessadminbot-db",
       "database_id": "6e8cd860-8158-475a-a48e-6ba650c6e9a0"
     }
-  ]
+  ],
+  "env": {
+    "production": {
+      "vars": {
+        "APP_ENV": "production",
+        "UPDATE_RETENTION_DAYS": "30"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "duessadminbot-db-prod",
+          "database_id": "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+        }
+      ]
+    }
+  }
 }
