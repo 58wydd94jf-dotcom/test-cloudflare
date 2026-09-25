@@ -1630,6 +1630,39 @@ function checkWebhookSecret(request, env) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/__telegram_test") {
+  const token = env.TELEGRAM_BOT_TOKEN?.trim();
+
+  if (!token) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: "TELEGRAM_BOT_TOKEN is missing"
+      }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
+  }
+
+  const telegramResponse = await fetch(
+    `https://api.telegram.org/bot${token}/getMe`
+  );
+
+  const telegramData = await telegramResponse.json();
+
+  return new Response(
+    JSON.stringify({
+      worker_status: telegramResponse.status,
+      telegram: telegramData
+    }, null, 2),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }
+  );
+}
 
     if (url.pathname === "/") {
       return textResponse(
