@@ -55,29 +55,22 @@ async function telegram(env, method, body) {
     throw new Error("TELEGRAM_BOT_TOK is not configured");
   }
 
-  const url =
-    `https://api.telegram.org/bot${token}/${method}`;
-
-  const requestOptions = {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  };
-
+  const url = `https://api.telegram.org/bot${token}/${method}`;
   let lastError;
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const response = await fetch(
-        url,
-        requestOptions
-      );
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
 
       const data = await response.json();
 
-      if (!data.ok) {
+      if (!response.ok || !data.ok) {
         throw new Error(
           `Telegram ${method} failed: ${JSON.stringify(data)}`
         );
@@ -93,7 +86,7 @@ async function telegram(env, method, body) {
           attempt,
           errorName: error?.name,
           errorMessage: error?.message,
-          errorStack: error?.stack
+          errorStack: error?.stack,
         })
       );
 
@@ -121,15 +114,16 @@ async function sendMessage(env, chatId, text, replyMarkup) {
   return telegram(env, "sendMessage", body);
 }
 
-async function answerCallbackQuery(
-  env,
-  callbackQueryId,
-  text
-) {
-  return telegram(env, "answerCallbackQuery", {
+async function answerCallbackQuery(env, callbackQueryId, text) {
+  const body = {
     callback_query_id: callbackQueryId,
-    text,
-  });
+  };
+
+  if (text) {
+    body.text = text;
+  }
+
+  return telegram(env, "answerCallbackQuery", body);
 }
 
 function keyboard(rows) {
@@ -157,7 +151,9 @@ function normalizeText(value) {
 }
 
 function parseGermanNumber(value) {
-  let s = normalizeText(value).replace(/[€\s]/g, "");
+  let s = normalizeText(value)
+    .replace(/[€\s]/g, "")
+    .replace(/[^\d,.-]/g, "");
 
   if (!s) {
     return null;
@@ -230,6 +226,41 @@ function commandName(text) {
   return match ? match[1].toLowerCase() : null;
 }
 
+function isValidDateInput(value) {
+  const text = normalizeText(value);
+
+  const match = text.match(
+    /^(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(\d{4})$/
+  );
+
+  if (!match) {
+    return false;
+  }
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+
+  const date = new Date(year, month - 1, day);
+
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  );
+}
+
+function normalizePhone(value) {
+  return normalizeText(value).replace(/[^\d+()\-\s]/g, "");
+}
+
+function isValidPhone(value) {
+  const phone = normalizePhone(value);
+  const digits = phone.replace(/\D/g, "");
+
+  return digits.length >= 7 && digits.length <= 15;
+}
+
 async function getOrCreateUser(env, from) {
   const telegramId = from.id;
 
@@ -292,12 +323,7 @@ async function getSession(env, userId) {
     .first();
 }
 
-async function setSession(
-  env,
-  userId,
-  state,
-  data = {}
-) {
+async function setSession(env, userId, state, data = {}) {
   await env.DB.prepare(
     `INSERT INTO user_sessions
      (user_id, state, data, updated_at)
@@ -307,11 +333,7 @@ async function setSession(
        data = excluded.data,
        updated_at = CURRENT_TIMESTAMP`
   )
-    .bind(
-      userId,
-      state,
-      JSON.stringify(data)
-    )
+    .bind(userId, state, JSON.stringify(data))
     .run();
 }
 
@@ -352,8 +374,8 @@ async function setCommands(env) {
     await telegram(env, "setMyCommands", {
       commands: COMMANDS,
     });
-  } catch {
-    // عدم موفقیت در تنظیم منو نباید عملکرد اصلی ربات را متوقف کند.
+  } catch (error) {
+    console.error("setMyCommands failed:", error);
   }
 }
 
@@ -488,53 +510,32 @@ async function showStatus(env, chatId, user) {
     return;
   }
 
-  const lines = [
-    "آگهی‌های شما:\n",
-  ];
+  const lines = ["آگهی‌های شما:\n"];
 
   for (const row of rows.results) {
     const price =
       row.listing_type === "sale"
         ? formatEuro(row.sale_price)
-        : formatEuro(
-            row.warm_rent ?? row.cold_rent
-          );
+        : formatEuro(row.warm_rent ?? row.cold_rent);
 
     lines.push(
       `#${row.id} — ${
-        TYPE_NAMES[row.listing_type] ||
-        row.listing_type
+        TYPE_NAMES[row.listing_type] || row.listing_type
       }\n` +
-        `${row.title ||
-          PROPERTY_NAMES[row.property_type] ||
-          "آگهی مسکن"}\n` +
-        `متراژ: ${formatNumber(
-          row.area_sqm
-        )} مترمربع\n` +
+        `${row.title || PROPERTY_NAMES[row.property_type] || "آگهی مسکن"}\n` +
+        `متراژ: ${formatNumber(row.area_sqm)} مترمربع\n` +
         `قیمت: ${price}\n` +
-        `وضعیت: ${
-          STATUS_NAMES[row.status] ||
-          row.status
-        }\n`
+        `وضعیت: ${STATUS_NAMES[row.status] || row.status}\n`
     );
   }
 
-  await sendMessage(
-    env,
-    chatId,
-    lines.join("\n")
-  );
+  await sendMessage(env, chatId, lines.join("\n"));
 }
 
 async function startSubmit(env, chatId, userId) {
-  await setSession(
-    env,
-    userId,
-    "listing_type",
-    {
-      listing: {},
-    }
-  );
+  await setSession(env, userId, "listing_type", {
+    listing: {},
+  });
 
   await sendMessage(
     env,
@@ -569,8 +570,37 @@ async function startSubmit(env, chatId, userId) {
   );
 }
 
+function validateListingForSave(listing) {
+  if (!TYPE_NAMES[listing?.listing_type]) return "نوع آگهی نامعتبر است.";
+  if (!PROPERTY_NAMES[listing?.property_type]) return "نوع ملک نامعتبر است.";
+  if (!normalizeText(listing.title) || normalizeText(listing.title).length > 150) return "عنوان آگهی نامعتبر است.";
+  if (!normalizeText(listing.description) || normalizeText(listing.description).length > 4000) return "توضیحات آگهی نامعتبر است.";
+  if (!normalizeText(listing.district) || normalizeText(listing.district).length > 120) return "منطقه نامعتبر است.";
+  if (!normalizeText(listing.address) || normalizeText(listing.address).length > 250) return "آدرس نامعتبر است.";
+  if (!Number.isFinite(Number(listing.area_sqm)) || Number(listing.area_sqm) <= 0 || Number(listing.area_sqm) > 10000) return "متراژ نامعتبر است.";
+  if (!isValidPhone(listing.phone)) return "شماره تلفن نامعتبر است.";
+
+  if (listing.listing_type === "sale") {
+    if (!Number.isFinite(Number(listing.sale_price)) || Number(listing.sale_price) <= 0) return "قیمت فروش نامعتبر است.";
+  } else {
+    if (!Number.isFinite(Number(listing.cold_rent)) || Number(listing.cold_rent) < 0) return "اجاره سرد نامعتبر است.";
+    if (!Number.isFinite(Number(listing.warm_rent)) || Number(listing.warm_rent) < 0) return "اجاره گرم نامعتبر است.";
+    if (Number(listing.warm_rent) < Number(listing.cold_rent)) return "اجاره گرم نمی‌تواند کمتر از اجاره سرد باشد.";
+    if (!Number.isFinite(Number(listing.additional_costs)) || Number(listing.additional_costs) < 0) return "هزینه‌های جانبی نامعتبر است.";
+    if (!Number.isFinite(Number(listing.deposit)) || Number(listing.deposit) < 0) return "ودیعه نامعتبر است.";
+  }
+
+  return null;
+}
+
 async function saveListing(env, user, listing) {
-  const result = await env.DB.prepare(
+  const validationError = validateListingForSave(listing);
+
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  const listingStatement = env.DB.prepare(
     `INSERT INTO listings (
       user_id,
       listing_type,
@@ -601,49 +631,48 @@ async function saveListing(env, user, listing) {
       ?, ?, ?, ?, ?,
       'pending'
     )`
-  )
-    .bind(
-      user.id,
-      listing.listing_type,
-      listing.property_type ?? null,
-      listing.title ?? null,
-      listing.description ?? null,
-      "Düsseldorf",
-      listing.district ?? null,
-      listing.address ?? null,
-      listing.rooms ?? null,
-      listing.area_sqm ?? null,
-      listing.cold_rent ?? null,
-      listing.warm_rent ?? null,
-      listing.additional_costs ?? null,
-      listing.deposit ?? null,
-      listing.available_from ?? null,
-      listing.furnished ? 1 : 0,
-      listing.balcony ? 1 : 0,
-      listing.elevator ? 1 : 0,
-      listing.floor ?? null,
-      listing.sale_price ?? null
-    )
-    .run();
+  ).bind(
+    user.id,
+    listing.listing_type,
+    listing.property_type ?? null,
+    normalizeText(listing.title),
+    normalizeText(listing.description),
+    "Düsseldorf",
+    normalizeText(listing.district),
+    normalizeText(listing.address),
+    listing.rooms ?? null,
+    listing.area_sqm,
+    listing.cold_rent ?? null,
+    listing.warm_rent ?? null,
+    listing.additional_costs ?? null,
+    listing.deposit ?? null,
+    listing.available_from ?? null,
+    listing.furnished ? 1 : 0,
+    listing.balcony ? 1 : 0,
+    listing.elevator ? 1 : 0,
+    normalizeText(listing.floor) || null,
+    listing.sale_price ?? null
+  );
 
+  const result = await listingStatement.run();
   const listingId = result.meta.last_row_id;
 
-  for (
-    let i = 0;
-    i < (listing.photos || []).length;
-    i++
-  ) {
-    await env.DB.prepare(
-      `INSERT INTO listing_images
-       (listing_id, telegram_file_id, sort_order)
-       VALUES (?, ?, ?)`
-    )
-      .bind(
-        listingId,
-        listing.photos[i],
-        i
-      )
-      .run();
+  if (!listingId) {
+    throw new Error("D1 did not return a listing id");
+  }
+
+  if ((listing.photos || []).length) {
+    const statements = (listing.photos || [])
+      .slice(0, MAX_PHOTOS)
+      .map((fileId, index) =>
+        env.DB.prepare(
+          `INSERT INTO listing_images
+           (listing_id, telegram_file_id, sort_order)
+           VALUES (?, ?, ?)`
+        ).bind(listingId, fileId, index)
+      );
+
+    await env.DB.batch(statements);
   }
 
   return listingId;
@@ -652,90 +681,54 @@ async function saveListing(env, user, listing) {
 function listingSummary(listing) {
   const price =
     listing.listing_type === "sale"
-      ? `قیمت فروش: ${formatEuro(
-          listing.sale_price
-        )}`
+      ? `قیمت فروش: ${formatEuro(listing.sale_price)}`
       : [
-          `اجاره سرد: ${formatEuro(
-            listing.cold_rent
-          )}`,
-          `اجاره گرم: ${formatEuro(
-            listing.warm_rent
-          )}`,
-          `هزینه‌های جانبی: ${formatEuro(
-            listing.additional_costs
-          )}`,
-          `ودیعه: ${formatEuro(
-            listing.deposit
-          )}`,
+          `اجاره سرد: ${formatEuro(listing.cold_rent)}`,
+          `اجاره گرم: ${formatEuro(listing.warm_rent)}`,
+          `هزینه‌های جانبی: ${formatEuro(listing.additional_costs)}`,
+          `ودیعه: ${formatEuro(listing.deposit)}`,
         ].join("\n");
 
   return `خلاصه آگهی
 
-نوع: ${
-    TYPE_NAMES[listing.listing_type] || "—"
-  }
-نوع ملک: ${
-    PROPERTY_NAMES[listing.property_type] || "—"
-  }
+نوع: ${TYPE_NAMES[listing.listing_type] || "—"}
+نوع ملک: ${PROPERTY_NAMES[listing.property_type] || "—"}
 عنوان: ${listing.title || "—"}
 توضیحات: ${listing.description || "—"}
 شهر: Düsseldorf
 منطقه: ${listing.district || "—"}
 آدرس: ${listing.address || "—"}
 اتاق: ${formatNumber(listing.rooms)}
-متراژ: ${formatNumber(
-    listing.area_sqm
-  )} مترمربع
+متراژ: ${formatNumber(listing.area_sqm)} مترمربع
 ${price}
-تاریخ شروع: ${formatDate(
-    listing.available_from
-  )}
+تاریخ شروع: ${formatDate(listing.available_from)}
 مبله: ${boolLabel(listing.furnished)}
 بالکن: ${boolLabel(listing.balcony)}
 آسانسور: ${boolLabel(listing.elevator)}
 طبقه: ${listing.floor || "—"}
 شماره تلفن: ${listing.phone || "—"}
-تعداد عکس: ${
-    (listing.photos || []).length
-  }
+تعداد عکس: ${(listing.photos || []).length}
 
 اگر اطلاعات درست است، «تأیید و ثبت» را بزن.`;
 }
 
-async function nextQuestion(
-  env,
-  chatId,
-  userId,
-  state,
-  listing
-) {
+async function nextQuestion(env, chatId, userId, state, listing) {
   const questions = {
     title: "یک عنوان کوتاه برای آگهی بنویس.",
-    description:
-      "توضیحات کامل آگهی را بنویس.",
-    district:
-      "نام منطقه یا محله در دوسلدورف را بنویس.",
-    address:
-      "آدرس یا محدوده آگهی را بنویس.",
-    rooms:
-      "تعداد اتاق را وارد کن؛ مثلاً 2 یا 2,5",
-    area_sqm:
-      "متراژ را به مترمربع وارد کن؛ مثلاً 55",
-    cold_rent:
-      "اجاره سرد را به یورو وارد کن.",
-    warm_rent:
-      "اجاره گرم را به یورو وارد کن.",
+    description: "توضیحات کامل آگهی را بنویس.",
+    district: "نام منطقه یا محله در دوسلدورف را بنویس.",
+    address: "آدرس یا محدوده آگهی را بنویس.",
+    rooms: "تعداد اتاق را وارد کن؛ مثلاً 2 یا 2,5",
+    area_sqm: "متراژ را به مترمربع وارد کن؛ مثلاً 55",
+    cold_rent: "اجاره سرد را به یورو وارد کن.",
+    warm_rent: "اجاره گرم را به یورو وارد کن.",
     additional_costs:
       "هزینه‌های جانبی را به یورو وارد کن. اگر نداری، 0 بنویس.",
-    deposit:
-      "ودیعه را به یورو وارد کن. اگر ندارد، 0 بنویس.",
-    sale_price:
-      "قیمت فروش را به یورو وارد کن.",
+    deposit: "ودیعه را به یورو وارد کن. اگر ندارد، 0 بنویس.",
+    sale_price: "قیمت فروش را به یورو وارد کن.",
     available_from:
-      "تاریخ شروع را وارد کن؛ مثلاً 01.10.2026",
-    floor:
-      "طبقه را وارد کن؛ مثلاً EG، 1 یا 2.",
+      "تاریخ شروع را به شکل روز.ماه.سال وارد کن؛ مثلاً 01.10.2026",
+    floor: "طبقه را وارد کن؛ مثلاً EG، 1 یا 2.",
     phone:
       "شماره تلفن تماس را وارد کن یا از دکمه ارسال شماره استفاده کن.",
   };
@@ -773,13 +766,11 @@ async function nextQuestion(
         [
           {
             text: "بله",
-            callback_data:
-              "feature:furnished:1",
+            callback_data: "feature:furnished:1",
           },
           {
             text: "خیر",
-            callback_data:
-              "feature:furnished:0",
+            callback_data: "feature:furnished:0",
           },
         ],
       ])
@@ -797,13 +788,11 @@ async function nextQuestion(
         [
           {
             text: "بله",
-            callback_data:
-              "feature:balcony:1",
+            callback_data: "feature:balcony:1",
           },
           {
             text: "خیر",
-            callback_data:
-              "feature:balcony:0",
+            callback_data: "feature:balcony:0",
           },
         ],
       ])
@@ -821,13 +810,11 @@ async function nextQuestion(
         [
           {
             text: "بله",
-            callback_data:
-              "feature:elevator:1",
+            callback_data: "feature:elevator:1",
           },
           {
             text: "خیر",
-            callback_data:
-              "feature:elevator:0",
+            callback_data: "feature:elevator:0",
           },
         ],
       ])
@@ -845,8 +832,7 @@ async function nextQuestion(
         [
           {
             text: "تأیید و ثبت",
-            callback_data:
-              "listing:confirm",
+            callback_data: "listing:confirm",
           },
         ],
         [
@@ -870,22 +856,19 @@ async function nextQuestion(
         [
           {
             text: "آپارتمان",
-            callback_data:
-              "property:apartment",
+            callback_data: "property:apartment",
           },
         ],
         [
           {
             text: "خانه",
-            callback_data:
-              "property:house",
+            callback_data: "property:house",
           },
         ],
         [
           {
             text: "اتاق",
-            callback_data:
-              "property:room",
+            callback_data: "property:room",
           },
         ],
       ])
@@ -921,13 +904,42 @@ async function nextQuestion(
       ]);
     }
 
-    await sendMessage(
-      env,
-      chatId,
-      questions[state],
-      markup
-    );
+    await sendMessage(env, chatId, questions[state], markup);
   }
+}
+
+function nextState(state, listing) {
+  if (state === "listing_type") return "property_type";
+  if (state === "property_type") return "title";
+  if (state === "title") return "description";
+  if (state === "description") return "district";
+  if (state === "district") return "address";
+  if (state === "address") return "rooms";
+  if (state === "rooms") return "area_sqm";
+
+  if (state === "area_sqm") {
+    return listing.listing_type === "sale"
+      ? "sale_price"
+      : "cold_rent";
+  }
+
+  if (state === "cold_rent") return "warm_rent";
+  if (state === "warm_rent") return "additional_costs";
+  if (state === "additional_costs") return "deposit";
+
+  if (state === "deposit" || state === "sale_price") {
+    return "available_from";
+  }
+
+  if (state === "available_from") return "floor";
+  if (state === "floor") return "phone";
+  if (state === "phone") return "features";
+  if (state === "features") return "balcony";
+  if (state === "balcony") return "elevator";
+  if (state === "elevator") return "photos";
+  if (state === "photos") return "confirmation";
+
+  return "confirmation";
 }
 
 async function processListingText(
@@ -938,18 +950,11 @@ async function processListingText(
   text,
   contact
 ) {
-  const data = safeJsonParse(
-    session.data,
-    {}
-  );
-
+  const data = safeJsonParse(session.data, {});
   const listing = data.listing || {};
   const state = session.state;
 
-  if (
-    text === "لغو" ||
-    text === "/cancel"
-  ) {
+  if (text === "لغو" || text === "/cancel") {
     await clearSession(env, user.id);
 
     await sendMessage(
@@ -963,22 +968,38 @@ async function processListingText(
   }
 
   if (state === "title") {
+    if (!text || text.length < 2) {
+      await sendMessage(env, chatId, "عنوان معتبر وارد کن.");
+      return;
+    }
+
     listing.title = text;
   } else if (state === "description") {
+    if (!text || text.length < 5) {
+      await sendMessage(env, chatId, "توضیحات کامل‌تری وارد کن.");
+      return;
+    }
+
     listing.description = text;
   } else if (state === "district") {
+    if (!text) {
+      await sendMessage(env, chatId, "نام منطقه را وارد کن.");
+      return;
+    }
+
     listing.district = text;
   } else if (state === "address") {
+    if (!text) {
+      await sendMessage(env, chatId, "آدرس یا محدوده را وارد کن.");
+      return;
+    }
+
     listing.address = text;
   } else if (state === "rooms") {
     const value = parseGermanNumber(text);
 
-    if (value === null || value < 0) {
-      await sendMessage(
-        env,
-        chatId,
-        "عدد معتبر وارد کن."
-      );
+    if (value === null || value < 0 || value > 100) {
+      await sendMessage(env, chatId, "تعداد اتاق معتبر وارد کن.");
       return;
     }
 
@@ -986,12 +1007,8 @@ async function processListingText(
   } else if (state === "area_sqm") {
     const value = parseGermanNumber(text);
 
-    if (value === null || value <= 0) {
-      await sendMessage(
-        env,
-        chatId,
-        "متراژ معتبر وارد کن."
-      );
+    if (value === null || value <= 0 || value > 10000) {
+      await sendMessage(env, chatId, "متراژ معتبر وارد کن.");
       return;
     }
 
@@ -1006,24 +1023,44 @@ async function processListingText(
     const value = parseGermanNumber(text);
 
     if (value === null || value < 0) {
-      await sendMessage(
-        env,
-        chatId,
-        "مبلغ معتبر وارد کن."
-      );
+      await sendMessage(env, chatId, "مبلغ معتبر وارد کن.");
       return;
     }
 
     listing[state] = value;
-  } else if (
-    state === "available_from"
-  ) {
+  } else if (state === "available_from") {
+    if (!isValidDateInput(text)) {
+      await sendMessage(
+        env,
+        chatId,
+        "تاریخ نامعتبر است. لطفاً به شکل 01.10.2026 وارد کن."
+      );
+      return;
+    }
+
     listing.available_from = text;
   } else if (state === "floor") {
+    if (!text || text.length > 20) {
+      await sendMessage(env, chatId, "طبقه معتبر وارد کن.");
+      return;
+    }
+
     listing.floor = text;
   } else if (state === "phone") {
-    listing.phone =
-      contact?.phone_number || text;
+    const phone = normalizePhone(
+      contact?.phone_number || text
+    );
+
+    if (!isValidPhone(phone)) {
+      await sendMessage(
+        env,
+        chatId,
+        "شماره تلفن معتبر وارد کن یا از دکمه ارسال شماره تلفن استفاده کن."
+      );
+      return;
+    }
+
+    listing.phone = phone;
 
     await env.DB.prepare(
       `UPDATE users
@@ -1031,28 +1068,17 @@ async function processListingText(
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`
     )
-      .bind(
-        listing.phone,
-        user.id
-      )
+      .bind(phone, user.id)
       .run();
   } else {
     return;
   }
 
-  const next = nextState(
-    state,
-    listing
-  );
+  const next = nextState(state, listing);
 
-  await setSession(
-    env,
-    user.id,
-    next,
-    {
-      listing,
-    }
-  );
+  await setSession(env, user.id, next, {
+    listing,
+  });
 
   await nextQuestion(
     env,
@@ -1063,106 +1089,21 @@ async function processListingText(
   );
 }
 
-function nextState(state, listing) {
-  if (state === "listing_type") {
-    return "property_type";
-  }
-
-  if (state === "property_type") {
-    return "title";
-  }
-
-  if (state === "title") {
-    return "description";
-  }
-
-  if (state === "description") {
-    return "district";
-  }
-
-  if (state === "district") {
-    return "address";
-  }
-
-  if (state === "address") {
-    return "rooms";
-  }
-
-  if (state === "rooms") {
-    return "area_sqm";
-  }
-
-  if (state === "area_sqm") {
-    return listing.listing_type === "sale"
-      ? "sale_price"
-      : "cold_rent";
-  }
-
-  if (state === "cold_rent") {
-    return "warm_rent";
-  }
-
-  if (state === "warm_rent") {
-    return "additional_costs";
-  }
-
-  if (state === "additional_costs") {
-    return "deposit";
-  }
-
-  if (
-    state === "deposit" ||
-    state === "sale_price"
-  ) {
-    return "available_from";
-  }
-
-  if (state === "available_from") {
-    return "floor";
-  }
-
-  if (state === "floor") {
-    return "phone";
-  }
-
-  if (state === "phone") {
-    return "features";
-  }
-
-  if (state === "features") {
-    return "balcony";
-  }
-
-  if (state === "balcony") {
-    return "elevator";
-  }
-
-  if (state === "elevator") {
-    return "photos";
-  }
-
-  if (state === "photos") {
-    return "confirmation";
-  }
-
-  return "confirmation";
-}
-
-async function handleCallback(
-  env,
-  query,
-  user
-) {
-  const chatId =
-    query.message.chat.id;
-
+async function handleCallback(env, query, user) {
+  const chatId = query.message?.chat?.id;
   const data = query.data || "";
 
-  if (data === "cancel") {
-    await clearSession(
+  if (!chatId) {
+    await answerCallbackQuery(
       env,
-      user.id
+      query.id,
+      "خطا در دریافت گفتگو"
     );
+    return;
+  }
+
+  if (data === "cancel") {
+    await clearSession(env, user.id);
 
     await answerCallbackQuery(
       env,
@@ -1181,69 +1122,38 @@ async function handleCallback(
   }
 
   if (data === "submit") {
-    await answerCallbackQuery(
-      env,
-      query.id
-    );
-
-    await startSubmit(
-      env,
-      chatId,
-      user.id
-    );
-
+    await answerCallbackQuery(env, query.id);
+    await startSubmit(env, chatId, user.id);
     return;
   }
 
   if (data === "status") {
-    await answerCallbackQuery(
-      env,
-      query.id
-    );
-
-    await showStatus(
-      env,
-      chatId,
-      user
-    );
-
+    await answerCallbackQuery(env, query.id);
+    await showStatus(env, chatId, user);
     return;
   }
 
   if (data === "profile") {
-    await answerCallbackQuery(
-      env,
-      query.id
-    );
-
-    await showProfile(
-      env,
-      chatId,
-      user
-    );
-
+    await answerCallbackQuery(env, query.id);
+    await showProfile(env, chatId, user);
     return;
   }
 
   if (data === "help") {
-    await answerCallbackQuery(
-      env,
-      query.id
-    );
-
-    await showHelp(
-      env,
-      chatId
-    );
-
+    await answerCallbackQuery(env, query.id);
+    await showHelp(env, chatId);
     return;
   }
 
   if (data.startsWith("type:")) {
-    const type =
-      data.split(":")[1];
+    const type = data.split(":")[1];
 
     if (!TYPE_NAMES[type]) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "نوع آگهی نامعتبر است"
+      );
       return;
     }
 
@@ -1251,14 +1161,9 @@ async function handleCallback(
       listing_type: type,
     };
 
-    await setSession(
-      env,
-      user.id,
-      "property_type",
-      {
-        listing,
-      }
-    );
+    await setSession(env, user.id, "property_type", {
+      listing,
+    });
 
     await answerCallbackQuery(
       env,
@@ -1278,32 +1183,36 @@ async function handleCallback(
   }
 
   if (data.startsWith("property:")) {
-    const property =
-      data.split(":")[1];
+    const property = data.split(":")[1];
 
-    const session =
-      await getSession(
+    if (!PROPERTY_NAMES[property]) {
+      await answerCallbackQuery(
         env,
-        user.id
+        query.id,
+        "نوع ملک نامعتبر است"
       );
+      return;
+    }
+
+    const session = await getSession(env, user.id);
+
+    if (!session) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "عملیات منقضی شده است"
+      );
+      return;
+    }
 
     const listing =
-      safeJsonParse(
-        session?.data,
-        {}
-      ).listing || {};
+      safeJsonParse(session.data, {}).listing || {};
 
-    listing.property_type =
-      property;
+    listing.property_type = property;
 
-    await setSession(
-      env,
-      user.id,
-      "title",
-      {
-        listing,
-      }
-    );
+    await setSession(env, user.id, "title", {
+      listing,
+    });
 
     await answerCallbackQuery(
       env,
@@ -1323,23 +1232,35 @@ async function handleCallback(
   }
 
   if (data.startsWith("feature:")) {
-    const [, field, value] =
-      data.split(":");
+    const [, field, value] = data.split(":");
 
-    const session =
-      await getSession(
+    if (
+      !["furnished", "balcony", "elevator"].includes(field) ||
+      !["0", "1"].includes(value)
+    ) {
+      await answerCallbackQuery(
         env,
-        user.id
+        query.id,
+        "گزینه نامعتبر است"
       );
+      return;
+    }
+
+    const session = await getSession(env, user.id);
+
+    if (!session) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "عملیات منقضی شده است"
+      );
+      return;
+    }
 
     const listing =
-      safeJsonParse(
-        session?.data,
-        {}
-      ).listing || {};
+      safeJsonParse(session.data, {}).listing || {};
 
-    listing[field] =
-      Number(value);
+    listing[field] = Number(value);
 
     let next;
 
@@ -1347,27 +1268,18 @@ async function handleCallback(
       next = "balcony";
     } else if (field === "balcony") {
       next = "elevator";
-    } else if (field === "elevator") {
-      next = "photos";
     } else {
-      next = "confirmation";
+      next = "photos";
     }
 
-    await setSession(
-      env,
-      user.id,
-      next,
-      {
-        listing,
-      }
-    );
+    await setSession(env, user.id, next, {
+      listing,
+    });
 
     await answerCallbackQuery(
       env,
       query.id,
-      Number(value)
-        ? "بله"
-        : "خیر"
+      Number(value) ? "بله" : "خیر"
     );
 
     await nextQuestion(
@@ -1381,36 +1293,61 @@ async function handleCallback(
     return;
   }
 
-  if (
-    data === "listing:confirm"
-  ) {
-    const session =
-      await getSession(
-        env,
-        user.id
-      );
+  if (data === "listing:confirm") {
+    const session = await getSession(env, user.id);
 
     if (!session) {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "عملیات منقضی شده است"
+      );
+      return;
+    }
+
+    if (session.state !== "confirmation") {
+      await answerCallbackQuery(
+        env,
+        query.id,
+        "این آگهی آماده ثبت نیست"
+      );
       return;
     }
 
     const listing =
-      safeJsonParse(
-        session.data,
-        {}
-      ).listing || {};
+      safeJsonParse(session.data, {}).listing || {};
 
-    const id =
-      await saveListing(
+    const validationError = validateListingForSave(listing);
+
+    if (validationError) {
+      await answerCallbackQuery(
         env,
-        user,
-        listing
+        query.id,
+        validationError
+      );
+      return;
+    }
+
+    await setSession(env, user.id, "saving", {
+      listing,
+    });
+
+    let id;
+
+    try {
+      id = await saveListing(env, user, listing);
+    } catch (error) {
+      await setSession(
+        env,
+        user.id,
+        "confirmation",
+        { listing }
       );
 
-    await clearSession(
-      env,
-      user.id
-    );
+      throw error;
+    }
+
+    await clearSession(env, user.id);
 
     await answerCallbackQuery(
       env,
@@ -1428,46 +1365,38 @@ async function handleCallback(
 پس از بررسی، وضعیت آگهی در بخش «پیگیری آگهی‌ها» قابل مشاهده است.`,
       removeKeyboard()
     );
+
+    return;
   }
+
+  await answerCallbackQuery(
+    env,
+    query.id,
+    "دستور نامعتبر است"
+  );
 }
 
-async function handleMessage(
-  env,
-  message
-) {
+async function handleMessage(env, message) {
   if (!message?.chat) {
     return;
   }
 
-  const from =
-    message.from;
+  const from = message.from;
 
   if (!from) {
     return;
   }
 
-  const user =
-    await getOrCreateUser(
-      env,
-      from
-    );
-
-  const chatId =
-    message.chat.id;
+  const user = await getOrCreateUser(env, from);
+  const chatId = message.chat.id;
 
   if (
-    message.contact?.user_id ===
-    from.id
+    message.contact &&
+    message.contact.user_id === from.id
   ) {
-    const session =
-      await getSession(
-        env,
-        user.id
-      );
+    const session = await getSession(env, user.id);
 
-    if (
-      session?.state === "phone"
-    ) {
+    if (session?.state === "phone") {
       await processListingText(
         env,
         chatId,
@@ -1481,59 +1410,37 @@ async function handleMessage(
     return;
   }
 
-  if (
-    message.photo?.length
-  ) {
-    const session =
-      await getSession(
-        env,
-        user.id
-      );
+  if (message.photo?.length) {
+    const session = await getSession(env, user.id);
 
-    if (
-      session?.state === "photos"
-    ) {
-      const data =
-        safeJsonParse(
-          session.data,
-          {}
+    if (session?.state === "photos") {
+      const data = safeJsonParse(session.data, {});
+      const listing = data.listing || {};
+
+      listing.photos = listing.photos || [];
+
+      if (listing.photos.length >= MAX_PHOTOS) {
+        await sendMessage(
+          env,
+          chatId,
+          "حداکثر تعداد عکس دریافت شده است. «پایان عکس‌ها» را بزن."
         );
-
-      const listing =
-        data.listing || {};
-
-      listing.photos =
-        listing.photos || [];
-
-      if (
-        listing.photos.length <
-        MAX_PHOTOS
-      ) {
-        const photo =
-          message.photo[
-            message.photo.length - 1
-          ];
-
-        listing.photos.push(
-          photo.file_id
-        );
+        return;
       }
 
-      await setSession(
-        env,
-        user.id,
-        "photos",
-        {
-          listing,
-        }
-      );
+      const photo =
+        message.photo[message.photo.length - 1];
 
-      const remaining =
-        Math.max(
-          0,
-          MAX_PHOTOS -
-            listing.photos.length
-        );
+      listing.photos.push(photo.file_id);
+
+      await setSession(env, user.id, "photos", {
+        listing,
+      });
+
+      const remaining = Math.max(
+        0,
+        MAX_PHOTOS - listing.photos.length
+      );
 
       await sendMessage(
         env,
@@ -1559,79 +1466,43 @@ async function handleMessage(
     return;
   }
 
-  const text =
-    normalizeText(
-      message.text
-    );
+  const text = normalizeText(message.text);
 
   if (!text) {
     return;
   }
 
-  const command =
-    commandName(text);
+  const command = commandName(text);
 
   if (command === "start") {
-    await clearSession(
-      env,
-      user.id
-    );
-
+    await clearSession(env, user.id);
     await setCommands(env);
-
-    await showStart(
-      env,
-      chatId,
-      user
-    );
-
+    await showStart(env, chatId, user);
     return;
   }
 
   if (command === "help") {
-    await showHelp(
-      env,
-      chatId
-    );
-
+    await showHelp(env, chatId);
     return;
   }
 
   if (command === "submit") {
-    await startSubmit(
-      env,
-      chatId,
-      user.id
-    );
-
+    await startSubmit(env, chatId, user.id);
     return;
   }
 
   if (command === "status") {
-    await showStatus(
-      env,
-      chatId,
-      user
-    );
-
+    await showStatus(env, chatId, user);
     return;
   }
 
   if (command === "profile") {
-    await showProfile(
-      env,
-      chatId,
-      user
-    );
-
+    await showProfile(env, chatId, user);
     return;
   }
 
   if (command === "cancel") {
-    await clearSession(
-      env,
-      user.id
-    );
+    await clearSession(env, user.id);
 
     await sendMessage(
       env,
@@ -1643,32 +1514,20 @@ async function handleMessage(
     return;
   }
 
-  const session =
-    await getSession(
-      env,
-      user.id
-    );
+  const session = await getSession(env, user.id);
 
   if (
     session?.state === "photos" &&
     text === "پایان عکس‌ها"
   ) {
-    const data =
-      safeJsonParse(
-        session.data,
-        {}
-      );
-
-    const listing =
-      data.listing || {};
+    const data = safeJsonParse(session.data, {});
+    const listing = data.listing || {};
 
     await setSession(
       env,
       user.id,
       "confirmation",
-      {
-        listing,
-      }
+      { listing }
     );
 
     await nextQuestion(
@@ -1679,6 +1538,15 @@ async function handleMessage(
       listing
     );
 
+    return;
+  }
+
+  if (session?.state === "saving") {
+    await sendMessage(
+      env,
+      chatId,
+      "آگهی در حال ثبت است. لطفاً چند لحظه صبر کن."
+    );
     return;
   }
 
@@ -1694,7 +1562,6 @@ async function handleMessage(
       text,
       null
     );
-
     return;
   }
 
@@ -1705,68 +1572,49 @@ async function handleMessage(
   );
 }
 
-async function handleUpdate(
-  env,
-  update
-) {
-  if (
-    update.update_id !==
-    undefined
-  ) {
-    if (
-      await wasUpdateProcessed(
-        env,
-        update.update_id
-      )
-    ) {
+async function handleUpdate(env, update) {
+  const updateId = update?.update_id;
+
+  if (updateId !== undefined) {
+    if (await wasUpdateProcessed(env, updateId)) {
       return;
     }
-
-    await markUpdateProcessed(
-      env,
-      update.update_id
-    );
   }
 
-  if (
-    update.callback_query
-  ) {
-    const query =
-      update.callback_query;
+  if (update.callback_query) {
+    const query = update.callback_query;
 
     if (!query.from) {
       return;
     }
 
-    const user =
-      await getOrCreateUser(
-        env,
-        query.from
-      );
+    const user = await getOrCreateUser(
+      env,
+      query.from
+    );
 
     await handleCallback(
       env,
       query,
       user
     );
-
-    return;
-  }
-
-  if (update.message) {
+  } else if (update.message) {
     await handleMessage(
       env,
       update.message
     );
   }
+
+  if (updateId !== undefined) {
+    await markUpdateProcessed(
+      env,
+      updateId
+    );
+  }
 }
 
-function checkWebhookSecret(
-  request,
-  env
-) {
-  const configured =
-    env.TELEGRAM_WEBHOOK_SECRET;
+function checkWebhookSecret(request, env) {
+  const configured = env.TELEGRAM_WEBHOOK_SECRET;
 
   if (!configured) {
     return true;
@@ -1781,8 +1629,7 @@ function checkWebhookSecret(
 
 export default {
   async fetch(request, env) {
-    const url =
-      new URL(request.url);
+    const url = new URL(request.url);
 
     if (url.pathname === "/") {
       return textResponse(
@@ -1790,40 +1637,57 @@ export default {
       );
     }
 
-    if (
-      url.pathname !==
-      "/telegram/webhook"
-    ) {
+    if (url.pathname !== "/telegram/webhook") {
       return textResponse(
         "Not found.",
         404
       );
     }
 
-    if (
-      request.method !== "POST"
-    ) {
+    if (request.method !== "POST") {
       return textResponse(
         "Method not allowed.",
         405
       );
     }
 
-    if (
-      !checkWebhookSecret(
-        request,
-        env
-      )
-    ) {
+    if (!checkWebhookSecret(request, env)) {
       return textResponse(
         "Unauthorized.",
         401
       );
     }
 
+    const contentType =
+      request.headers.get("content-type") || "";
+
+    if (
+      !contentType
+        .toLowerCase()
+        .includes("application/json")
+    ) {
+      return textResponse(
+        "Unsupported media type.",
+        415
+      );
+    }
+
+    const contentLength = Number(
+      request.headers.get("content-length") || 0
+    );
+
+    if (
+      Number.isFinite(contentLength) &&
+      contentLength > 1024 * 1024
+    ) {
+      return textResponse(
+        "Payload too large.",
+        413
+      );
+    }
+
     try {
-      const update =
-        await request.json();
+      const update = await request.json();
 
       await handleUpdate(
         env,
@@ -1832,7 +1696,13 @@ export default {
 
       return textResponse("OK");
     } catch (error) {
-      console.error(error);
+      console.error(
+        JSON.stringify({
+          errorName: error?.name,
+          errorMessage: error?.message,
+          errorStack: error?.stack,
+        })
+      );
 
       return textResponse(
         "Internal error.",
