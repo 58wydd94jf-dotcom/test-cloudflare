@@ -8,5 +8,13 @@
       "database_name": "duessadminbot-db",
       "database_id": "6e8cd860-8158-475a-a48e-6ba650c6e9a0"
     }
-  ]
+  ],
+    "previews":    {
+        "d1_databases": [
+            "binding": "DB",
+            "database_name": "duessadminbot-db",
+            "database_id": "6e8cd860-8158-475a-a48e-6ba650c6e9a0"
+        }
+    ]
+}
 }
