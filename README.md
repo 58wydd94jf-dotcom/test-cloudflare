@@ -1,1 +1,26 @@
 # test-cloudflare
+
+ربات تلگرام این مخزن برای ثبت آگهی مسکن به زبان فارسی طراحی شده است.
+
+## تنظیمات
+
+- `TELEGRAM_BOT_TOKEN` توکن اصلی ربات است. برای سازگاری موقت، `TELEGRAM_BOT_TOK` هم خوانده می‌شود، اما مقدار استاندارد `TELEGRAM_BOT_TOKEN` است.
+- `TELEGRAM_WEBHOOK_SECRET` باید با هدر `X-Telegram-Bot-Api-Secret-Token` تلگرام یکسان باشد.
+- `APP_ENV=production` بدون `TELEGRAM_WEBHOOK_SECRET` معتبر پذیرفته نمی‌شود.
+- `TELEGRAM_UPDATE_RETENTION_DAYS` تعداد روزهای نگهداری رکوردهای `telegram_updates` را تعیین می‌کند.
+- `TELEGRAM_UPDATE_CLEANUP_BATCH_SIZE` سقف حذف هر اجرای پاکسازی را تعیین می‌کند.
+
+## پایگاه داده
+
+- اتصال D1 با بایندینگ `DB` و نام `duessadminbot-db` پیکربندی شده است.
+- اسکیما در فایل `/home/runner/work/test-cloudflare/test-cloudflare/migrations/0001_initial_schema.sql` دقیقاً مطابق قرارداد شناخته‌شدهٔ تولید تعریف شده است.
+- این مهاجرت برای ساخت پایگاه دادهٔ تازهٔ محلی/آزمایشی است. برای پایگاه دادهٔ تولیدی از پیش موجود، نباید بدون بازبینی عملیاتی و تطبیق سابقهٔ مهاجرت اجرا شود.
+
+## توسعه و آزمون محلی
+
+- آزمون‌ها فقط روی SQLite محلی اجرا می‌شوند و هیچ دسترسی نوشتنی به D1 واقعی ندارند.
+- برای اجرای آزمون‌ها:
+
+```bash
+npm test
+```
