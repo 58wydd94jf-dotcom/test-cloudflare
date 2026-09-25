@@ -4,7 +4,7 @@
 
 ## تنظیمات
 
-- `TELEGRAM_BOT_TOKEN` توکن اصلی ربات است. برای سازگاری موقت، `TELEGRAM_BOT_TOK` هم خوانده می‌شود، اما مقدار استاندارد `TELEGRAM_BOT_TOKEN` است.
+- `TELEGRAM_BOT_TOKEN` توکن اصلی ربات است. برای سازگاری موقت، `TELEGRAM_BOT_TOK` هم فقط به‌صورت مسیر قدیمی و در حال حذف خوانده می‌شود؛ استقرارهای جدید نباید به آن وابسته باشند.
 - `TELEGRAM_WEBHOOK_SECRET` باید با هدر `X-Telegram-Bot-Api-Secret-Token` تلگرام یکسان باشد.
 - `APP_ENV=production` بدون `TELEGRAM_WEBHOOK_SECRET` معتبر پذیرفته نمی‌شود.
 - `TELEGRAM_UPDATE_RETENTION_DAYS` تعداد روزهای نگهداری رکوردهای `telegram_updates` را تعیین می‌کند.

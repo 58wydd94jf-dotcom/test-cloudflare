@@ -537,7 +537,7 @@ test("cleanup removes old telegram updates by processed_at using configured rete
   await env.DB.prepare(
     "INSERT INTO telegram_updates (update_id, processed_at) VALUES (?, ?)"
   )
-    .bind(2, "2999-01-01 00:00:00")
+    .bind(2, "2999-01-01T00:00:00.000Z")
     .run();
 
   const deleted = await internals.cleanupProcessedUpdates(env);

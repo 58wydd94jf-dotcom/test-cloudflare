@@ -704,8 +704,8 @@ async function cleanupProcessedUpdates(
      WHERE update_id IN (
        SELECT update_id
        FROM telegram_updates
-       WHERE processed_at < datetime('now', ?)
-       ORDER BY processed_at
+       WHERE datetime(processed_at) < datetime('now', ?)
+       ORDER BY datetime(processed_at)
        LIMIT ?
      )`
   )
