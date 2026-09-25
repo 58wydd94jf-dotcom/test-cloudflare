@@ -55,26 +55,57 @@ async function telegram(env, method, body) {
     throw new Error("TELEGRAM_BOT_TOK is not configured");
   }
 
-  const response = await fetch(
-    `https://api.telegram.org/bot${token}/${method}`,
-    {
-      method: "POST",
-      headers: {
-        "content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
+  const url =
+    `https://api.telegram.org/bot${token}/${method}`;
+
+  const requestOptions = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  };
+
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(
+        url,
+        requestOptions
+      );
+
+      const data = await response.json();
+
+      if (!data.ok) {
+        throw new Error(
+          `Telegram ${method} failed: ${JSON.stringify(data)}`
+        );
+      }
+
+      return data.result;
+    } catch (error) {
+      lastError = error;
+
+      console.error(
+        JSON.stringify({
+          telegramMethod: method,
+          attempt,
+          errorName: error?.name,
+          errorMessage: error?.message,
+          errorStack: error?.stack
+        })
+      );
+
+      if (attempt < 3) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, attempt * 500)
+        );
+      }
     }
-  );
-
-  const data = await response.json();
-
-  if (!data.ok) {
-    throw new Error(
-      `Telegram ${method} failed: ${JSON.stringify(data)}`
-    );
   }
 
-  return data.result;
+  throw lastError;
 }
 
 async function sendMessage(env, chatId, text, replyMarkup) {
