@@ -2,11 +2,29 @@
   "name": "test-cloudflare",
   "main": "src/index.js",
   "compatibility_date": "2026-09-24",
+  "vars": {
+    "APP_ENV": "development",
+    "TELEGRAM_UPDATE_RETENTION_DAYS": "30",
+    "TELEGRAM_UPDATE_CLEANUP_BATCH_SIZE": "500"
+  },
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "duessadminbot-db",
-      "database_id": "6e8cd860-8158-475a-a48e-6ba650c6e9a0"
+      "database_id": "6e8cd860-8158-475a-a48e-6ba650c6e9a0",
+      "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "env": {
+    "production": {
+      "vars": {
+        "APP_ENV": "production",
+        "TELEGRAM_UPDATE_RETENTION_DAYS": "30",
+        "TELEGRAM_UPDATE_CLEANUP_BATCH_SIZE": "500"
+      }
+    }
+  }
 }
