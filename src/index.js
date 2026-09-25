@@ -29,6 +29,60 @@ const STATUS_NAMES = {
 };
 
 const MAX_PHOTOS = 5;
+const TELEGRAM_RETRY_ATTEMPTS = 3;
+const RETRYABLE_HTTP_STATUSES = new Set([
+  408, 409, 425, 429, 500, 502, 503, 504,
+]);
+const REQUIRED_TABLE_COLUMNS = {
+  users: [
+    "id",
+    "telegram_id",
+    "username",
+    "first_name",
+    "last_name",
+    "phone",
+  ],
+  user_sessions: [
+    "user_id",
+    "state",
+    "data",
+    "updated_at",
+  ],
+  telegram_updates: ["update_id"],
+  listings: [
+    "id",
+    "user_id",
+    "listing_type",
+    "property_type",
+    "title",
+    "description",
+    "city",
+    "district",
+    "address",
+    "rooms",
+    "area_sqm",
+    "cold_rent",
+    "warm_rent",
+    "additional_costs",
+    "deposit",
+    "available_from",
+    "furnished",
+    "balcony",
+    "elevator",
+    "floor",
+    "sale_price",
+    "status",
+    "created_at",
+  ],
+  listing_images: [
+    "id",
+    "listing_id",
+    "telegram_file_id",
+    "sort_order",
+  ],
+};
+
+let runtimeReadyPromise = null;
 
 function textResponse(text, status = 200) {
   return new Response(text, {
@@ -49,10 +103,14 @@ function jsonResponse(data, status = 200) {
 }
 
 async function telegram(env, method, body) {
-  const token = env.TELEGRAM_BOT_TOK;
+  const token =
+    env.TELEGRAM_BOT_TOKEN ??
+    env.TELEGRAM_BOT_TOK;
 
   if (!token) {
-    throw new Error("TELEGRAM_BOT_TOK is not configured");
+    throw new Error(
+      "TELEGRAM_BOT_TOKEN is not configured"
+    );
   }
 
   const url =
@@ -66,46 +124,79 @@ async function telegram(env, method, body) {
     body: JSON.stringify(body),
   };
 
-  let lastError;
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (
+    let attempt = 1;
+    attempt <= TELEGRAM_RETRY_ATTEMPTS;
+    attempt++
+  ) {
     try {
       const response = await fetch(
         url,
         requestOptions
       );
 
-      const data = await response.json();
+      const payload = await response.text();
+      const data = safeJsonParse(payload, null);
+      const isOk =
+        response.ok &&
+        data &&
+        data.ok === true;
 
-      if (!data.ok) {
-        throw new Error(
-          `Telegram ${method} failed: ${JSON.stringify(data)}`
+      if (!isOk) {
+        const retryAfter = Number(
+          data?.parameters?.retry_after
         );
+        const isRetryable =
+          RETRYABLE_HTTP_STATUSES.has(
+            response.status
+          ) ||
+          Number.isFinite(retryAfter);
+        const error = new Error(
+          `Telegram ${method} failed with status ${response.status}`
+        );
+        error.retryable = isRetryable;
+        error.retryAfterMs =
+          Number.isFinite(retryAfter)
+            ? Math.max(0, retryAfter * 1000)
+            : null;
+        error.status = response.status;
+        throw error;
       }
 
       return data.result;
     } catch (error) {
-      lastError = error;
-
       console.error(
         JSON.stringify({
           telegramMethod: method,
           attempt,
+          retryable: Boolean(error?.retryable),
+          status: error?.status ?? null,
           errorName: error?.name,
           errorMessage: error?.message,
-          errorStack: error?.stack
+          errorStack: error?.stack,
         })
       );
 
-      if (attempt < 3) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, attempt * 500)
-        );
+      const shouldRetry =
+        Boolean(error?.retryable) ||
+        error?.name === "TypeError";
+
+      if (
+        attempt <
+          TELEGRAM_RETRY_ATTEMPTS &&
+        shouldRetry
+      ) {
+        const waitMs =
+          Number.isFinite(error?.retryAfterMs)
+            ? error.retryAfterMs
+            : attempt * 500;
+        await sleep(waitMs);
+        continue;
       }
+
+      throw error;
     }
   }
-
-  throw lastError;
 }
 
 async function sendMessage(env, chatId, text, replyMarkup) {
@@ -210,12 +301,120 @@ function formatDate(value) {
   return String(value);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) =>
+    setTimeout(resolve, ms)
+  );
+}
+
 function safeJsonParse(value, fallback = {}) {
   try {
     return value ? JSON.parse(value) : fallback;
   } catch {
     return fallback;
   }
+}
+
+function getAppEnv(env) {
+  return String(env.APP_ENV ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function validateEnvironment(env) {
+  const token =
+    env.TELEGRAM_BOT_TOKEN ??
+    env.TELEGRAM_BOT_TOK;
+
+  if (!token) {
+    throw new Error(
+      "Missing TELEGRAM_BOT_TOKEN secret."
+    );
+  }
+
+  if (
+    getAppEnv(env) === "production" &&
+    !env.TELEGRAM_WEBHOOK_SECRET
+  ) {
+    throw new Error(
+      "Missing TELEGRAM_WEBHOOK_SECRET in production."
+    );
+  }
+}
+
+async function getTableColumns(env, tableName) {
+  const tableExists = await env.DB.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+  )
+    .bind(tableName)
+    .first();
+
+  if (!tableExists) {
+    return null;
+  }
+
+  const result = await env.DB.prepare(
+    `PRAGMA table_info(${tableName})`
+  ).all();
+  const columns = new Set();
+
+  for (const row of result.results || []) {
+    if (row?.name) {
+      columns.add(row.name);
+    }
+  }
+
+  return columns;
+}
+
+async function validateSchema(env) {
+  const problems = [];
+
+  for (const [tableName, requiredColumns] of Object.entries(
+    REQUIRED_TABLE_COLUMNS
+  )) {
+    const columns = await getTableColumns(
+      env,
+      tableName
+    );
+
+    if (!columns) {
+      problems.push(
+        `Missing table: ${tableName}`
+      );
+      continue;
+    }
+
+    for (const column of requiredColumns) {
+      if (!columns.has(column)) {
+        problems.push(
+          `Missing column: ${tableName}.${column}`
+        );
+      }
+    }
+  }
+
+  if (problems.length) {
+    throw new Error(
+      `D1 schema mismatch. ${problems.join(
+        "; "
+      )}`
+    );
+  }
+}
+
+async function ensureRuntimeReady(env) {
+  if (!runtimeReadyPromise) {
+    runtimeReadyPromise = (async () => {
+      validateEnvironment(env);
+      await validateSchema(env);
+    })().catch((error) => {
+      runtimeReadyPromise = null;
+      throw error;
+    });
+  }
+
+  await runtimeReadyPromise;
 }
 
 function boolLabel(value) {
@@ -234,7 +433,15 @@ async function getOrCreateUser(env, from) {
   const telegramId = from.id;
 
   const existing = await env.DB.prepare(
-    "SELECT * FROM users WHERE telegram_id = ?"
+    `SELECT
+       id,
+       telegram_id,
+       username,
+       first_name,
+       last_name,
+       phone
+     FROM users
+     WHERE telegram_id = ?`
   )
     .bind(telegramId)
     .first();
@@ -278,7 +485,15 @@ async function getOrCreateUser(env, from) {
     .run();
 
   return env.DB.prepare(
-    "SELECT * FROM users WHERE id = ?"
+    `SELECT
+       id,
+       telegram_id,
+       username,
+       first_name,
+       last_name,
+       phone
+     FROM users
+     WHERE id = ?`
   )
     .bind(result.meta.last_row_id)
     .first();
@@ -286,7 +501,13 @@ async function getOrCreateUser(env, from) {
 
 async function getSession(env, userId) {
   return env.DB.prepare(
-    "SELECT * FROM user_sessions WHERE user_id = ?"
+    `SELECT
+       user_id,
+       state,
+       data,
+       updated_at
+     FROM user_sessions
+     WHERE user_id = ?`
   )
     .bind(userId)
     .first();
@@ -329,19 +550,19 @@ async function clearSession(env, userId) {
     .run();
 }
 
-async function wasUpdateProcessed(env, updateId) {
-  const row = await env.DB.prepare(
-    "SELECT update_id FROM telegram_updates WHERE update_id = ?"
+async function claimUpdateId(env, updateId) {
+  const result = await env.DB.prepare(
+    "INSERT OR IGNORE INTO telegram_updates (update_id) VALUES (?)"
   )
     .bind(updateId)
-    .first();
+    .run();
 
-  return Boolean(row);
+  return Number(result?.meta?.changes ?? 0) > 0;
 }
 
-async function markUpdateProcessed(env, updateId) {
+async function releaseUpdateId(env, updateId) {
   await env.DB.prepare(
-    "INSERT OR IGNORE INTO telegram_updates (update_id) VALUES (?)"
+    "DELETE FROM telegram_updates WHERE update_id = ?"
   )
     .bind(updateId)
     .run();
@@ -1709,55 +1930,68 @@ async function handleUpdate(
   env,
   update
 ) {
+  let claimedUpdateId = false;
+  let updateId = null;
+
   if (
     update.update_id !==
     undefined
   ) {
-    if (
-      await wasUpdateProcessed(
-        env,
-        update.update_id
-      )
-    ) {
-      return;
-    }
-
-    await markUpdateProcessed(
+    updateId = update.update_id;
+    claimedUpdateId = await claimUpdateId(
       env,
-      update.update_id
+      updateId
     );
-  }
 
-  if (
-    update.callback_query
-  ) {
-    const query =
-      update.callback_query;
-
-    if (!query.from) {
+    if (!claimedUpdateId) {
       return;
     }
+  }
+  try {
+    if (
+      update.callback_query
+    ) {
+      const query =
+        update.callback_query;
 
-    const user =
-      await getOrCreateUser(
+      if (!query.from) {
+        return;
+      }
+
+      const user =
+        await getOrCreateUser(
+          env,
+          query.from
+        );
+
+      await handleCallback(
         env,
-        query.from
+        query,
+        user
       );
 
-    await handleCallback(
-      env,
-      query,
-      user
-    );
+      return;
+    }
 
-    return;
-  }
+    if (update.message) {
+      await handleMessage(
+        env,
+        update.message
+      );
+    }
+  } catch (error) {
+    if (
+      claimedUpdateId &&
+      updateId !== null &&
+      Boolean(error?.retryable)
+    ) {
+      await releaseUpdateId(
+        env,
+        updateId
+      );
+    }
 
-  if (update.message) {
-    await handleMessage(
-      env,
-      update.message
-    );
+    throw error;
   }
 }
 
@@ -1781,49 +2015,62 @@ function checkWebhookSecret(
 
 export default {
   async fetch(request, env) {
-    const url =
-      new URL(request.url);
+    let url;
+    try {
+      url = new URL(request.url);
+    } catch {
+      return textResponse("Bad request.", 400);
+    }
 
     if (url.pathname === "/") {
-      return textResponse(
-        "duessAdminBot is running."
-      );
+      return textResponse("duessAdminBot is running.");
     }
 
-    if (
-      url.pathname !==
-      "/telegram/webhook"
-    ) {
-      return textResponse(
-        "Not found.",
-        404
-      );
+    if (url.pathname !== "/telegram/webhook") {
+      return textResponse("Not found.", 404);
     }
 
-    if (
-      request.method !== "POST"
-    ) {
+    if (request.method !== "POST") {
       return textResponse(
         "Method not allowed.",
         405
       );
     }
 
-    if (
-      !checkWebhookSecret(
-        request,
-        env
-      )
-    ) {
-      return textResponse(
-        "Unauthorized.",
-        401
+    try {
+      await ensureRuntimeReady(env);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "runtime_validation_failed",
+          errorMessage: error?.message,
+          errorName: error?.name,
+        })
       );
+      return textResponse(
+        "Server misconfigured.",
+        500
+      );
+    }
+
+    if (!checkWebhookSecret(request, env)) {
+      return textResponse("Unauthorized.", 401);
     }
 
     try {
       const update =
         await request.json();
+
+      if (
+        !update ||
+        typeof update !== "object" ||
+        Array.isArray(update)
+      ) {
+        return textResponse(
+          "Invalid telegram update.",
+          400
+        );
+      }
 
       await handleUpdate(
         env,
@@ -1832,11 +2079,20 @@ export default {
 
       return textResponse("OK");
     } catch (error) {
-      console.error(error);
+      console.error(
+        JSON.stringify({
+          event: "webhook_processing_error",
+          errorMessage: error?.message,
+          errorName: error?.name,
+          retryable: Boolean(error?.retryable),
+        })
+      );
 
       return textResponse(
         "Internal error.",
-        500
+        Boolean(error?.retryable)
+          ? 503
+          : 500
       );
     }
   },
