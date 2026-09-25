@@ -1755,33 +1755,35 @@ async function handleCallback(env, query, user) {
       return;
     }
 
+    let id;
+
     try {
-      const id = await saveListing(env, user, listing);
-
-      await clearSession(env, user.id);
-
-      await answerCallbackQuery(
-        env,
-        query.id,
-        "آگهی ثبت شد."
-      );
-
-      await sendMessage(
-        env,
-        chatId,
-        `آگهی شما با شماره #${id} ثبت شد.
-
-وضعیت فعلی: در انتظار بررسی
-
-پس از بررسی، وضعیت آگهی در بخش «آگهی‌های من» قابل مشاهده است.`,
-        removeKeyboard()
-      );
+      id = await saveListing(env, user, listing);
     } catch (error) {
       await setSession(env, user.id, "confirmation", {
         listing,
       });
       throw error;
     }
+
+    await clearSession(env, user.id);
+
+    await answerCallbackQuery(
+      env,
+      query.id,
+      "آگهی ثبت شد."
+    );
+
+    await sendMessage(
+      env,
+      chatId,
+      `آگهی شما با شماره #${id} ثبت شد.
+
+وضعیت فعلی: در انتظار بررسی
+
+پس از بررسی، وضعیت آگهی در بخش «آگهی‌های من» قابل مشاهده است.`,
+      removeKeyboard()
+    );
 
     return;
   }

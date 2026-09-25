@@ -523,6 +523,56 @@ test("listing confirmation is duplicate-safe and rejects stale callback tokens",
   );
 });
 
+test("saved listings are not duplicated if Telegram delivery fails after persistence", async () => {
+  const env = createEnv();
+  const user = await createUser(env, 7010);
+  const listing = buildListing({
+    confirmation_token: "postsave-token",
+  });
+
+  await internals.setSession(env, user.id, "confirmation", {
+    listing,
+  });
+
+  const callback = {
+    id: "cb-postsave",
+    data: "listing:confirm:postsave-token",
+    from: { id: 7010, first_name: "پریسا" },
+    message: { chat: { id: 7010 } },
+  };
+
+  await assert.rejects(
+    withMockedFetch(
+      createTelegramFetch([], {
+        throwFor: ["sendMessage"],
+      }),
+      async () => internals.handleCallback(env, callback, user)
+    )
+  );
+
+  const afterFailure = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM listings WHERE user_id = ?"
+  )
+    .bind(user.id)
+    .first();
+  const session = await internals.getSession(env, user.id);
+
+  assert.equal(afterFailure.count, 1);
+  assert.equal(session.state, "idle");
+
+  await withMockedFetch(createTelegramFetch([]), async () => {
+    await internals.handleCallback(env, callback, user);
+  });
+
+  const afterRetry = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM listings WHERE user_id = ?"
+  )
+    .bind(user.id)
+    .first();
+
+  assert.equal(afterRetry.count, 1);
+});
+
 test("cleanup removes old telegram updates by processed_at using configured retention", async () => {
   const env = createEnv({
     TELEGRAM_UPDATE_RETENTION_DAYS: "10",
