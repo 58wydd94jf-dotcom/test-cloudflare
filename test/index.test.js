@@ -628,7 +628,22 @@ test("webhook secret validation distinguishes development and production require
     {
       ok: false,
       status: 500,
-      message: "Production webhook secret is not configured.",
+      message: "Webhook secret is not configured.",
+    }
+  );
+
+  assert.deepEqual(
+    internals.checkWebhookSecret(
+      request,
+      createEnv({
+        APP_ENV: "staging",
+        TELEGRAM_WEBHOOK_SECRET: "",
+      })
+    ),
+    {
+      ok: false,
+      status: 500,
+      message: "Webhook secret is not configured.",
     }
   );
 

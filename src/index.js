@@ -2035,14 +2035,21 @@ function checkWebhookSecret(request, env) {
   const configured = normalizeText(
     env.TELEGRAM_WEBHOOK_SECRET
   );
-  const appEnv = normalizeText(env.APP_ENV).toLowerCase();
+  const appEnv =
+    normalizeText(env.APP_ENV).toLowerCase() ||
+    "development";
+  const relaxedEnvironments = new Set([
+    "development",
+    "dev",
+    "local",
+    "test",
+  ]);
 
-  if (appEnv === "production" && !configured) {
+  if (!configured && !relaxedEnvironments.has(appEnv)) {
     return {
       ok: false,
       status: 500,
-      message:
-        "Production webhook secret is not configured.",
+      message: "Webhook secret is not configured.",
     };
   }
 

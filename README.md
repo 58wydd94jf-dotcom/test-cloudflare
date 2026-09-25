@@ -6,7 +6,7 @@
 
 - `TELEGRAM_BOT_TOKEN` توکن اصلی ربات است. برای سازگاری موقت، `TELEGRAM_BOT_TOK` هم فقط به‌صورت مسیر قدیمی و در حال حذف خوانده می‌شود؛ استقرارهای جدید نباید به آن وابسته باشند.
 - `TELEGRAM_WEBHOOK_SECRET` باید با هدر `X-Telegram-Bot-Api-Secret-Token` تلگرام یکسان باشد.
-- `APP_ENV=production` بدون `TELEGRAM_WEBHOOK_SECRET` معتبر پذیرفته نمی‌شود.
+- فقط در محیط‌های `development`، `dev`، `local` و `test` می‌توان بدون `TELEGRAM_WEBHOOK_SECRET` اجرا شد. در هر محیط دیگر، نبودن این مقدار خطای پیکربندی محسوب می‌شود.
 - `TELEGRAM_UPDATE_RETENTION_DAYS` تعداد روزهای نگهداری رکوردهای `telegram_updates` را تعیین می‌کند.
 - `TELEGRAM_UPDATE_CLEANUP_BATCH_SIZE` سقف حذف هر اجرای پاکسازی را تعیین می‌کند.
 
