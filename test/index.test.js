@@ -419,6 +419,7 @@ test("listing validation accepts rental, sale, and room flows and rejects invali
   const errors = internals.validateListing(
     buildListing({
       title: "",
+      city: "",
       area_sqm: 0,
     })
   );
@@ -899,4 +900,33 @@ test("worker fetch enforces webhook security and malformed request handling", as
   );
 
   assert.equal(badJson.status, 400);
+});
+
+test("scheduled cleanup uses the same retention path as manual cleanup", async () => {
+  const env = createEnv({
+    TELEGRAM_UPDATE_RETENTION_DAYS: "10",
+    TELEGRAM_UPDATE_CLEANUP_BATCH_SIZE: "10",
+  });
+
+  await env.DB.prepare(
+    "INSERT INTO telegram_updates (update_id, processed_at) VALUES (?, ?)"
+  )
+    .bind(10, "2026-01-01T00:00:00.000Z")
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO telegram_updates (update_id, processed_at) VALUES (?, ?)"
+  )
+    .bind(11, "2999-01-01T00:00:00.000Z")
+    .run();
+
+  await worker.scheduled({}, env);
+
+  const remaining = await env.DB.prepare(
+    "SELECT update_id FROM telegram_updates ORDER BY update_id"
+  ).all();
+
+  assert.deepEqual(
+    remaining.results.map((row) => row.update_id),
+    [11]
+  );
 });

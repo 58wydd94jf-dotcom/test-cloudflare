@@ -200,13 +200,20 @@ function normalizePhoneNumber(value) {
   return phone ? phone.slice(0, 50) : null;
 }
 
-function normalizeListingForSave(listing = {}) {
+function normalizeListingForSave(
+  listing = {},
+  options = {}
+) {
+  const city =
+    cleanListingText(listing.city, 120) ||
+    (options.defaultCity ? DEFAULT_CITY : null);
+
   return {
     listing_type: listing.listing_type,
     property_type: listing.property_type ?? null,
     title: cleanListingText(listing.title, 120),
     description: cleanListingText(listing.description, 4000),
-    city: cleanListingText(listing.city, 120) || DEFAULT_CITY,
+    city,
     district: cleanListingText(listing.district, 120),
     address: cleanListingText(listing.address, 255),
     rooms:
@@ -255,7 +262,9 @@ function normalizeListingForSave(listing = {}) {
 }
 
 function validateListing(listing = {}) {
-  const normalized = normalizeListingForSave(listing);
+  const normalized = normalizeListingForSave(listing, {
+    defaultCity: true,
+  });
   const errors = [];
 
   if (!validListingType(normalized.listing_type)) {
@@ -413,7 +422,9 @@ function ensureConfirmationToken(listing) {
 }
 
 function listingSummary(listing) {
-  const normalized = normalizeListingForSave(listing);
+  const normalized = normalizeListingForSave(listing, {
+    defaultCity: true,
+  });
   const price =
     normalized.listing_type === "sale"
       ? `قیمت فروش: ${formatEuro(normalized.sale_price)}`
@@ -574,7 +585,7 @@ function removeKeyboard() {
 }
 
 async function getOrCreateUser(env, from) {
-  const user = await env.DB.prepare(
+  await env.DB.prepare(
     `INSERT INTO users
       (telegram_id, username, first_name, last_name)
      VALUES (?, ?, ?, ?)
@@ -582,8 +593,7 @@ async function getOrCreateUser(env, from) {
        username = excluded.username,
        first_name = excluded.first_name,
        last_name = excluded.last_name,
-       updated_at = CURRENT_TIMESTAMP
-     RETURNING *`
+       updated_at = CURRENT_TIMESTAMP`
   )
     .bind(
       from.id,
@@ -591,6 +601,12 @@ async function getOrCreateUser(env, from) {
       from.first_name ?? null,
       from.last_name ?? null
     )
+    .run();
+
+  const user = await env.DB.prepare(
+    "SELECT * FROM users WHERE telegram_id = ?"
+  )
+    .bind(from.id)
     .first();
 
   if (!user) {
