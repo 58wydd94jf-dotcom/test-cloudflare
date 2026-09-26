@@ -52,7 +52,7 @@ async function telegram(env, method, body) {
   const token = env.TELEGRAM_BOT_TOKEN;
 
   if (!token) {
-    throw new Error("TELEGRAM_BOT_TOK is not configured");
+    throw new Error("TELEGRAM_BOT_TOKEN is not configured");
   }
 
   const url = `https://api.telegram.org/bot${token}/${method}`;
