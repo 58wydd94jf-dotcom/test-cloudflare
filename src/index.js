@@ -49,7 +49,7 @@ function jsonResponse(data, status = 200) {
 }
 
 async function telegram(env, method, body) {
-  const token = env.TELEGRAM_BOT_TOK;
+  const token = env.TELEGRAM_BOT_TOKEN;
 
   if (!token) {
     throw new Error("TELEGRAM_BOT_TOK is not configured");
